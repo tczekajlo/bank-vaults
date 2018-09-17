@@ -16,12 +16,15 @@ package stub
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/banzaicloud/bank-vaults/operator/pkg/apis/vault/v1alpha1"
 	"github.com/banzaicloud/bank-vaults/pkg/kv/k8s"
@@ -92,17 +95,61 @@ func (h *Handler) Handle(ctx types.Context, event types.Event) error {
 		}
 
 		if !v.Spec.GetTLSDisable() {
-			// Create the secret if it doesn't exist
-			sec, err := secretForVault(v)
-			if err != nil {
-				return fmt.Errorf("failed to fabricate secret for vault: %v", err)
+
+			println("Checking certificate...")
+
+			sec := &v1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "v1",
+					Kind:       "Secret",
+				},
+			}
+			sec.Name = v.Name + "-tls"
+			sec.Namespace = v.Namespace
+
+			err := query.Get(sec)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to query secret for vault: %v", err)
+			} else if apierrors.IsNotFound(err) {
+				println("No previous Vault certificate, creating one")
+				sec, err = secretForVault(v)
+				if err != nil {
+					return fmt.Errorf("failed to fabricate secret for vault: %v", err)
+				}
+				addOwnerRefToObject(sec, asOwner(v))
+
+				// Create the secret if it doesn't exist
+				err = action.Create(sec)
+				if err != nil {
+					return fmt.Errorf("failed to create secret for vault: %v", err)
+				}
 			}
 
-			addOwnerRefToObject(sec, asOwner(v))
+			serverCert := sec.Data["server.crt"]
+			println("Parsing certificate:", string(serverCert))
+			serverCertBlock, _ := pem.Decode(serverCert)
+			if serverCertBlock == nil {
+				return fmt.Errorf("failed to parse PEM cert for vault")
+			}
+			cert, err := x509.ParseCertificate(serverCertBlock.Bytes)
+			if err != nil {
+				return fmt.Errorf("failed to parse DER cert for vault: %v", err)
+			}
 
-			err = action.Create(sec)
-			if err != nil && !apierrors.IsAlreadyExists(err) {
-				return fmt.Errorf("failed to create secret for vault: %v", err)
+			// If we are within the last day of the previous certificate's EOL
+			if cert.NotAfter.Sub(time.Now()) < 1*time.Minute {
+				newSec, err := secretForVault(v)
+				if err != nil {
+					return fmt.Errorf("failed to fabricate new secret for vault: %v", err)
+				}
+
+				sec.StringData = newSec.StringData
+
+				err = action.Update(sec)
+				if err != nil {
+					return fmt.Errorf("failed to update secret for vault: %v", err)
+				}
+				println("Certificate updated....")
 			}
 		}
 
@@ -169,7 +216,7 @@ func (h *Handler) Handle(ctx types.Context, event types.Event) error {
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create configurer deployment: %v", err)
 		}
-		logDeployment(configurerDep)
+		//logDeployment(configurerDep)
 
 		// Create the configmap if it doesn't exist
 		cm = configMapForConfigurer(v)
@@ -257,7 +304,7 @@ func secretForEtcd(e *etcdV1beta2.EtcdCluster) (*v1.Secret, error) {
 
 func secretForVault(om *v1alpha1.Vault) (*v1.Secret, error) {
 	hostsAndIPs := om.Name + "." + om.Namespace + ",127.0.0.1"
-	chain, err := tls.GenerateTLS(hostsAndIPs, "8760h")
+	chain, err := tls.GenerateTLS(hostsAndIPs, "3m")
 	if err != nil {
 		return nil, err
 	}
