@@ -45,8 +45,49 @@ type ScopedClaims struct {
 	Text string    `json:"text,omitempty"`
 }
 
+type options struct {
+	claimConverter  ClaimConverter
+	extractors      []jwtRequest.Extractor
+	externalIssuers map[string]bool
+}
+
+func (opts *options) apply(authOptions []AuthOption) {
+	for _, authOption := range authOptions {
+		authOption(opts)
+	}
+}
+
+// AuthOption allows setting optional attributes when
+// creating a JWTAuth Handler.
+type AuthOption func(*options)
+
+// WithClaimConverter adds a claim converter which converts the
+// ScopedClaims type claims before saving to the gin.Context
+func WithClaimConverter(claimConverter ClaimConverter) AuthOption {
+	return func(opts *options) {
+		opts.claimConverter = claimConverter
+	}
+}
+
+// WithJWTExtractor adds an extra JWT extractor to the options
+func WithJWTExtractor(extractor jwtRequest.Extractor) AuthOption {
+	return func(opts *options) {
+		opts.extractors = append(opts.extractors, extractor)
+	}
+}
+
+// WithExternalIssuer adds allowed external JWT issuers to the options
+func WithExternalIssuer(issuer string) AuthOption {
+	return func(opts *options) {
+		opts.externalIssuers[issuer] = true
+	}
+}
+
 // JWTAuth returns a new JWT authentication handler
-func JWTAuth(tokenStore TokenStore, signingKey string, claimConverter ClaimConverter, extractors ...jwtRequest.Extractor) gin.HandlerFunc {
+func JWTAuth(tokenStore TokenStore, signingKey string, authOptions ...AuthOption) gin.HandlerFunc {
+
+	opts := options{externalIssuers: map[string]bool{}}
+	opts.apply(authOptions)
 
 	signingKeyBase32 := []byte(base32.StdEncoding.EncodeToString([]byte(signingKey)))
 
@@ -59,14 +100,15 @@ func JWTAuth(tokenStore TokenStore, signingKey string, claimConverter ClaimConve
 	}
 
 	extractor := jwtRequest.MultiExtractor{jwtRequest.OAuth2Extractor}
-	for _, e := range extractors {
+	for _, e := range opts.extractors {
 		extractor = append(extractor, e)
 	}
 
 	return func(c *gin.Context) {
 
 		var claims ScopedClaims
-		accessToken, err := jwtRequest.ParseFromRequest(c.Request, extractor, hmacKeyFunc, jwtRequest.WithClaims(&claims))
+		// this checks if token has expired, badly signed, badly formatted
+		_, err := jwtRequest.ParseFromRequest(c.Request, extractor, hmacKeyFunc, jwtRequest.WithClaims(&claims))
 
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized,
@@ -77,27 +119,37 @@ func JWTAuth(tokenStore TokenStore, signingKey string, claimConverter ClaimConve
 			return
 		}
 
-		isTokenWhitelisted, err := isTokenWhitelisted(tokenStore, &claims)
+		if !opts.externalIssuers[claims.Issuer] {
+			isTokenWhitelisted, err := isTokenWhitelisted(tokenStore, &claims)
 
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError,
-				gin.H{
-					"message": "Failed to validate user token",
-					"error":   err.Error(),
-				})
-			log.Println("Failed to lookup user token:", err)
-			return
-		}
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError,
+					gin.H{
+						"message": "Failed to validate user token",
+						"error":   err.Error(),
+					})
+				log.Println("Failed to lookup user token:", err)
+				return
+			}
 
-		if !accessToken.Valid || !isTokenWhitelisted {
+			if !isTokenWhitelisted {
+				c.AbortWithStatusJSON(http.StatusUnauthorized,
+					gin.H{
+						"message": "Token was deleted",
+					})
+				return
+			}
+		} else if claims.ExpiresAt == 0 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized,
 				gin.H{
-					"message": "Invalid token",
+					"message": "Non expiring tokens are not allowed from external issuers",
 				})
 			return
+		} else {
+			// basically do nothing, we allow expiring tokens from external issuers
 		}
 
-		saveUserIntoContext(c, &claims, claimConverter)
+		saveUserIntoContext(c, &claims, &opts)
 	}
 }
 
@@ -108,11 +160,11 @@ func isTokenWhitelisted(tokenStore TokenStore, claims *ScopedClaims) (bool, erro
 	return token != nil, err
 }
 
-func saveUserIntoContext(c *gin.Context, claims *ScopedClaims, claimConverter func(*ScopedClaims) interface{}) {
+func saveUserIntoContext(c *gin.Context, claims *ScopedClaims, opts *options) {
 	var toSave interface{}
 	toSave = claims
-	if claimConverter != nil {
-		toSave = claimConverter(claims)
+	if opts.claimConverter != nil {
+		toSave = opts.claimConverter(claims)
 	}
 	newContext := context.WithValue(c.Request.Context(), CurrentUser, toSave)
 	c.Request = c.Request.WithContext(newContext)
