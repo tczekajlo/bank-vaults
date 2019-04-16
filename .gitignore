@@ -16,6 +16,7 @@
 
 # Operator
 operator/build/_output/bin/*
+operator/vendor
 
 /vendor/
 /.licensei.cache

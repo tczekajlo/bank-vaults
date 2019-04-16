@@ -30,24 +30,30 @@ import (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// +k8s:deepcopy-gen:interfaces=github.com/banzaicloud/bank-vaults/operator/pkg/apis/vault/v1alpha1.Config
+type Config interface{}
+
+// +k8s:deepcopy-gen:interfaces=github.com/banzaicloud/bank-vaults/operator/pkg/apis/vault/v1alpha1.ExternalConfig
+type ExternalConfig interface{}
+
 // VaultSpec defines the desired state of Vault
 type VaultSpec struct {
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
-	Size              int32                  `json:"size"`
-	Image             string                 `json:"image"`
-	BankVaultsImage   string                 `json:"bankVaultsImage"`
-	StatsdDisabled    bool                   `json:"statsdDisabled"`
-	StatsDImage       string                 `json:"statsdImage"`
-	FluentDEnabled    bool                   `json:"fluentdEnabled"`
-	FluentDImage      string                 `json:"fluentdImage"`
-	FluentDConfig     string                 `json:"fluentdConfig"`
-	Annotations       map[string]string      `json:"annotations"`
-	Config            map[string]interface{} `json:"config"`
-	ExternalConfig    map[string]interface{} `json:"externalConfig"`
-	UnsealConfig      UnsealConfig           `json:"unsealConfig"`
-	CredentialsConfig CredentialsConfig      `json:"credentialsConfig"`
-	EnvsConfig        []v1.EnvVar            `json:"envsConfig"`
-	SecurityContext   v1.PodSecurityContext  `json:"securityContext,omitempty"`
+	Size              int32                     `json:"size"`
+	Image             string                    `json:"image"`
+	BankVaultsImage   string                    `json:"bankVaultsImage"`
+	StatsdDisabled    bool                      `json:"statsdDisabled"`
+	StatsDImage       string                    `json:"statsdImage"`
+	FluentDEnabled    bool                      `json:"fluentdEnabled"`
+	FluentDImage      string                    `json:"fluentdImage"`
+	FluentDConfig     string                    `json:"fluentdConfig"`
+	Annotations       map[string]string         `json:"annotations"`
+	Config            map[string]Config         `json:"config"`
+	ExternalConfig    map[string]ExternalConfig `json:"externalConfig"`
+	UnsealConfig      UnsealConfig              `json:"unsealConfig"`
+	CredentialsConfig CredentialsConfig         `json:"credentialsConfig"`
+	EnvsConfig        []v1.EnvVar               `json:"envsConfig"`
+	SecurityContext   v1.PodSecurityContext     `json:"securityContext,omitempty"`
 	// This option gives us the option to workaround current StatefulSet limitations around updates
 	// See: https://github.com/kubernetes/kubernetes/issues/67250
 	// TODO: Should be removed once the ParallelPodManagement policy supports the broken update.
